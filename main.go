@@ -22,5 +22,6 @@ func main() {
 	defer filehandler.Close()
 
 	tokenStream := ScanningPhase(filehandler)
-	fmt.Printf("%v", tokenStream)
+	fmt.Println(tokenStream)
 }
+
