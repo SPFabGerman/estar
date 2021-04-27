@@ -8,9 +8,11 @@ import (
 type ScannerTokenType int
 
 const (
-	KeywordQuery ScannerTokenType = iota
+	KeywordQuery ScannerTokenType = iota + 1
 	Identifier
-	Other
+
+	Other     = 0
+	Undefined = -1
 )
 
 type ScannerToken struct {
@@ -25,31 +27,51 @@ type Scanner struct {
 	lnnr, colnr int
 }
 
-type ScannerMatcher struct {
+type ScannerMatcher interface {
+	getRegex() *regexp.Regexp
+}
+
+type ScannerMatcherRegular struct {
 	matchRegex  *regexp.Regexp
-	matchAction func(*Scanner, string, *ScannerToken) *ScannerToken
+	matchAction func(string, *ScannerToken) *ScannerToken
+}
+
+func (matcher ScannerMatcherRegular) getRegex() *regexp.Regexp {
+	return matcher.matchRegex
+}
+
+type ScannerMatcherSpecial struct {
+	matchRegex  *regexp.Regexp
+	matchAction func(string, *Scanner)
+}
+
+func (matcher ScannerMatcherSpecial) getRegex() *regexp.Regexp {
+	return matcher.matchRegex
 }
 
 // A List containing the regular expressions that define the tokens and a corresponding
 // action to create such a token.
 // The input is a pre-defined token. The function only has to change the corresponding values.
 var scannerMatchList = []ScannerMatcher{
-	{regexp.MustCompilePOSIX("^[ \t]+"),
-		func(s *Scanner, input string, token *ScannerToken) *ScannerToken {
-			s.colnr += len(input)
-			return nil
+	ScannerMatcherSpecial{regexp.MustCompilePOSIX("^[ \t]+"),
+		func(input string, scanner *Scanner) {
+			scanner.colnr += len(input)
 		}},
 
-	{regexp.MustCompilePOSIX("^\n"),
-		func(s *Scanner, input string, token *ScannerToken) *ScannerToken {
-			s.lnnr++
-			s.colnr = 1
-			return nil
+	ScannerMatcherSpecial{regexp.MustCompilePOSIX("^\n"),
+		func(input string, scanner *Scanner) {
+			scanner.lnnr++
+			scanner.colnr = 1
 		}},
 
-	{regexp.MustCompilePOSIX("^[A-Za-z0-9]+"),
-		func(s *Scanner, input string, token *ScannerToken) *ScannerToken {
-			s.colnr += len(input)
+	ScannerMatcherSpecial{regexp.MustCompilePOSIX("^//.*\n"),
+		func(input string, scanner *Scanner) {
+			scanner.lnnr++
+			scanner.colnr = 1
+		}},
+
+	ScannerMatcherRegular{regexp.MustCompilePOSIX("^[A-Za-z0-9]+"),
+		func(input string, token *ScannerToken) *ScannerToken {
 			token.tokenType = Identifier
 			return token
 		}},
@@ -77,27 +99,41 @@ func ScanningPhase(input io.Reader) []ScannerToken {
 	for scanner.pos < scanner.size-1 {
 		for _, ele := range scannerMatchList {
 			// Test if the Regex matches
-			match := ele.matchRegex.FindStringIndex(scanner.buffer[scanner.pos:])
+			match := ele.getRegex().FindStringIndex(scanner.buffer[scanner.pos:])
 			if match == nil || match[0] != 0 {
 				continue
 			}
 
-			// Regex matched. Create and initialize the token.
+			// Regex matched. Get matched string.
 			matchLength := match[1]
 			matchedString := scanner.buffer[scanner.pos : scanner.pos+matchLength]
-			inputToken := ScannerToken{
-				text:  matchedString,
-				lnnr:  scanner.lnnr,
-				colnr: scanner.colnr,
-			}
-			// Call matching action to modify the raw token and append it to the token list
-			outputToken := ele.matchAction(&scanner, matchedString, &inputToken)
-			if outputToken != nil {
-				tokenStream = append(tokenStream, *outputToken)
-			}
 
-			// Advance the scanner
-			scanner.pos += matchLength
+			// Check which type of matcher we have
+			switch matcher := ele.(type) {
+			case ScannerMatcherSpecial:
+				// We have a special matcher which changes the scanner state (manually)
+				matcher.matchAction(matchedString, &scanner)
+				// Advance the scanner
+				scanner.pos += matchLength
+			case ScannerMatcherRegular:
+				// Normal matcher which produces a token.
+				// Generate the initial token
+				inputToken := ScannerToken{
+					tokenType: Undefined,
+					text:  matchedString,
+					lnnr:  scanner.lnnr,
+					colnr: scanner.colnr,
+				}
+				// Call matching action to modify the raw token and append it to the token list
+				outputToken := matcher.matchAction(matchedString, &inputToken)
+				if outputToken != nil {
+					tokenStream = append(tokenStream, *outputToken)
+				}
+
+				// Advance the scanner
+				scanner.colnr += matchLength
+				scanner.pos += matchLength
+			}
 
 			break
 		}
