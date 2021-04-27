@@ -5,6 +5,87 @@ import (
 	"regexp"
 )
 
+type Scanner struct {
+	buffer      string
+	size, pos   int
+	lnnr, colnr int
+}
+
+func newScanner(inputString string) Scanner {
+	return Scanner{
+		buffer: inputString,
+		size:   len(inputString),
+		pos:    0,
+		lnnr:   1,
+		colnr:  1,
+	}
+}
+
+func (scanner *Scanner) nextToken() *ScannerToken {
+	// Scan as long as we have text left to read
+	for scanner.pos < scanner.size-1 {
+		// Used to track if a match was found, but no token was generated.
+		// E.g. when we only found special matches.
+		matchFound := false
+
+		for _, ele := range scannerMatchList {
+			// Test if the Regex matches
+			match := ele.getRegex().FindStringIndex(scanner.buffer[scanner.pos:])
+			if match == nil || match[0] != 0 {
+				// No match, try next token
+				continue
+			}
+
+			// Regex matched. Get matched string.
+			matchLength := match[1]
+			matchedString := scanner.buffer[scanner.pos : scanner.pos+matchLength]
+
+			// Check which type of matcher we have
+			switch matcher := ele.(type) {
+			case ScannerMatcherSpecial:
+				// We have a special matcher which changes the scanner state (manually)
+				matcher.matchAction(matchedString, scanner)
+
+				// Advance the scanner
+				scanner.pos += matchLength
+				matchFound = true
+			case ScannerMatcherRegular:
+				// Normal matcher which produces a token.
+				// Generate the initial token
+				inputToken := ScannerToken{
+					tokenType: Undefined,
+					text:      matchedString,
+					lnnr:      scanner.lnnr,
+					colnr:     scanner.colnr,
+				}
+				// Call matching action to modify the raw token
+				outputToken := matcher.matchAction(matchedString, &inputToken)
+				if outputToken == nil {
+					// No token was generated -> try remaining matchers
+					continue
+				}
+
+				// Advance the scanner
+				scanner.colnr += matchLength
+				scanner.pos += matchLength
+
+				return outputToken
+			}
+
+			break
+		} // END for range scannerMatchList
+
+		if !matchFound {
+			// All matchers failed
+			panic("Matching failure!") // TODO: Expand
+		}
+
+	} // END for scanner.pos < scanner.size
+
+	// End of buffer reached, return nil
+	return nil
+}
+
 type ScannerTokenType int
 
 const (
@@ -18,12 +99,6 @@ const (
 type ScannerToken struct {
 	tokenType   ScannerTokenType
 	text        string
-	lnnr, colnr int
-}
-
-type Scanner struct {
-	buffer      string
-	size, pos   int
 	lnnr, colnr int
 }
 
@@ -85,58 +160,12 @@ func ScanningPhase(input io.Reader) []ScannerToken {
 	}
 
 	// Initialize Scanner and Token Stream
-	var scanner Scanner = Scanner{
-		buffer: string(inputString),
-		size:   len(inputString),
-		pos:    0,
-		lnnr:   1,
-		colnr:  1,
-	}
+	var scanner Scanner = newScanner(string(inputString))
 
 	var tokenStream []ScannerToken = make([]ScannerToken, 0)
 
-	// Scan as long as we have text left to read
-	for scanner.pos < scanner.size-1 {
-		for _, ele := range scannerMatchList {
-			// Test if the Regex matches
-			match := ele.getRegex().FindStringIndex(scanner.buffer[scanner.pos:])
-			if match == nil || match[0] != 0 {
-				continue
-			}
-
-			// Regex matched. Get matched string.
-			matchLength := match[1]
-			matchedString := scanner.buffer[scanner.pos : scanner.pos+matchLength]
-
-			// Check which type of matcher we have
-			switch matcher := ele.(type) {
-			case ScannerMatcherSpecial:
-				// We have a special matcher which changes the scanner state (manually)
-				matcher.matchAction(matchedString, &scanner)
-				// Advance the scanner
-				scanner.pos += matchLength
-			case ScannerMatcherRegular:
-				// Normal matcher which produces a token.
-				// Generate the initial token
-				inputToken := ScannerToken{
-					tokenType: Undefined,
-					text:  matchedString,
-					lnnr:  scanner.lnnr,
-					colnr: scanner.colnr,
-				}
-				// Call matching action to modify the raw token and append it to the token list
-				outputToken := matcher.matchAction(matchedString, &inputToken)
-				if outputToken != nil {
-					tokenStream = append(tokenStream, *outputToken)
-				}
-
-				// Advance the scanner
-				scanner.colnr += matchLength
-				scanner.pos += matchLength
-			}
-
-			break
-		}
+	for token := scanner.nextToken(); token != nil; token = scanner.nextToken() {
+		tokenStream = append(tokenStream, *token)
 	}
 
 	return tokenStream
