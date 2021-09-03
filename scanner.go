@@ -24,10 +24,10 @@ func newScanner(inputString string) Scanner {
 func (scanner *Scanner) nextToken() *ScannerToken {
 	// Scan as long as we have text left to read
 	for scanner.pos < scanner.size-1 {
-		// Used to track if a match was found, but no token was generated.
-		// E.g. when we only found special matches.
-		matchFound := false
+		maxMatchLength := 0
+		var maxMatcher ScannerMatcher = nil
 
+		// Find longest match
 		for _, ele := range scannerMatchList {
 			// Test if the Regex matches
 			match := ele.getRegex().FindStringIndex(scanner.buffer[scanner.pos:])
@@ -38,46 +38,48 @@ func (scanner *Scanner) nextToken() *ScannerToken {
 
 			// Regex matched. Get matched string.
 			matchLength := match[1]
-			matchedString := scanner.buffer[scanner.pos : scanner.pos+matchLength]
+			if matchLength > maxMatchLength {
+				maxMatchLength = matchLength
+				maxMatcher = ele
+			}
+		}
 
-			// Check which type of matcher we have
-			switch matcher := ele.(type) {
-			case ScannerMatcherSpecial:
-				// We have a special matcher which changes the scanner state (manually)
-				matcher.matchAction(matchedString, scanner)
+		if maxMatcher == nil {
+			// All matchers failed
+			panic("Matching failure: No match found!") // TODO: Expand
+		}
 
-				// Advance the scanner
-				scanner.pos += matchLength
-				matchFound = true
-			case ScannerMatcherRegular:
-				// Normal matcher which produces a token.
-				// Generate the initial token
-				inputToken := ScannerToken{
-					tokenType: Undefined,
-					text:      matchedString,
-					lnnr:      scanner.lnnr,
-					colnr:     scanner.colnr,
-				}
-				// Call matching action to modify the raw token
-				outputToken := matcher.matchAction(matchedString, &inputToken)
-				if outputToken == nil {
-					// No token was generated -> try remaining matchers
-					continue
-				}
+		matchedString := scanner.buffer[scanner.pos : scanner.pos+maxMatchLength]
 
-				// Advance the scanner
-				scanner.colnr += matchLength
-				scanner.pos += matchLength
+		// Check which type of matcher we have and run action
+		switch matcher := maxMatcher.(type) {
+		case ScannerMatcherSpecial:
+			// We have a special matcher which changes the scanner state (manually)
+			matcher.matchAction(matchedString, scanner)
 
-				return outputToken
+			// Advance the scanner
+			scanner.pos += maxMatchLength
+		case ScannerMatcherRegular:
+			// Normal matcher which produces a token.
+			// Generate the initial token
+			inputToken := ScannerToken{
+				tokenType: Undefined,
+				text:      matchedString,
+				lnnr:      scanner.lnnr,
+				colnr:     scanner.colnr,
+			}
+			// Call matching action to modify the raw token
+			outputToken := matcher.matchAction(matchedString, &inputToken)
+			if outputToken == nil {
+				// No token was generated
+				panic("Matching failure: No token generated!")
 			}
 
-			break
-		} // END for range scannerMatchList
+			// Advance the scanner
+			scanner.colnr += maxMatchLength
+			scanner.pos += maxMatchLength
 
-		if !matchFound {
-			// All matchers failed
-			panic("Matching failure!") // TODO: Expand
+			return outputToken
 		}
 
 	} // END for scanner.pos < scanner.size
@@ -89,7 +91,7 @@ func (scanner *Scanner) nextToken() *ScannerToken {
 type ScannerTokenType int
 
 const (
-	KeywordQuery ScannerTokenType = iota + 1
+	Keyword ScannerTokenType = iota + 1
 	Identifier
 
 	Other     = 0
@@ -145,6 +147,12 @@ var scannerMatchList = []ScannerMatcher{
 			scanner.colnr = 1
 		}},
 
+	ScannerMatcherRegular{regexp.MustCompilePOSIX("^if"),
+		func(input string, token *ScannerToken) *ScannerToken {
+			token.tokenType = Keyword
+			return token
+		}},
+
 	ScannerMatcherRegular{regexp.MustCompilePOSIX("^[A-Za-z0-9]+"),
 		func(input string, token *ScannerToken) *ScannerToken {
 			token.tokenType = Identifier
@@ -170,3 +178,4 @@ func ScanningPhase(input io.Reader) []ScannerToken {
 
 	return tokenStream
 }
+
